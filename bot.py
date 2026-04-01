@@ -4,21 +4,28 @@ import random
 import asyncio
 import json
 import os
+import datetime
 from discord.ext import commands, tasks
 from oauth2client.service_account import ServiceAccountCredentials
 
 # ==========================================
 # 1. НАСТРОЙКИ (ВСТАВЬ СВОИ ДАННЫЕ)
 # ==========================================
-SHEET_ID = "1bQ1FQq7nqdzAuA9Gl1c2NUNY1BJs1wV5Xzv5UsGyXMQ"
-TOKEN = 'MTQ4Njg1OTAxOTg3OTQ0ODYxNw.GlD-W9.vDR5XyqpWOnBVnrB0z9tq8ZGttQwxZfl8pDJOs'
+SHEET_ID = os.getenv("SHEET_ID")
+TOKEN = os.getenv("DISCORD_TOKEN") 
+
 TARGET_ROLE_ID = 1487969672178438295  # ID роли для автодобавления
-MAILING_INTERVAL_HOURS = 24           # Частота рассылки (в часах)
 MEMORY_FILE = 'waiting_answers.json'  # Файл для сохранения памяти бота
 
 # --- НАСТРОЙКИ ДЛЯ ЖАЛОБ И ЛОГОВ ---
 MODERATOR_ROLE_ID = 1488001276804337685 # Роль Модератора вопросов
 ADMIN_CHANNEL_ID = 1487859608658772010  # Канал для уведомлений и ЛОГОВ
+
+# --- НАСТРОЙКА ВРЕМЕНИ РАССЫЛКИ ---
+# ВАЖНО: Время здесь указывается по UTC (по Гринвичу). 
+# Если твой сервер (или нужный часовой пояс) находится в МСК (UTC+3), 
+# то чтобы рассылка была в 08:00 утра по МСК, здесь нужно указать hour=5.
+SEND_TIME = datetime.time(hour=0, minute=55) 
 
 # ==========================================
 # 2. ИНИЦИАЛИЗАЦИЯ GOOGLE TABLES
@@ -45,7 +52,7 @@ BORDER_STYLE = {"style": "SOLID_MEDIUM", "color": {"red": 0, "green": 0, "blue":
 
 # --- УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ЛОГИРОВАНИЯ ---
 async def log_ds(text):
-    print(text) # Вывод в консоль компьютера
+    print(text) # Вывод в консоль сервера
     try:
         channel = bot.get_channel(ADMIN_CHANNEL_ID)
         if channel:
@@ -183,16 +190,20 @@ async def add_user_to_sheet(member):
         await log_ds(f"❌ Ошибка при добавлении {member.name}: {e}")
         return False
 
-# Синхронизация ролей
+# Синхронизация ролей и никнеймов
 async def sync_sheet_with_roles():
-    await log_ds("⚙️ Синхронизация таблицы с ролями на сервере...")
+    await log_ds("⚙️ Синхронизация таблицы: проверка ролей и обновлений никнеймов...")
     try:
-        valid_ids = set()
+        # Собираем всех пользователей с нужной ролью в словарь {id: объект_пользователя}
+        valid_members = {}
         for guild in bot.guilds:
             for member in guild.members:
                 if not member.bot and discord.utils.get(member.roles, id=TARGET_ROLE_ID):
-                    valid_ids.add(str(member.id))
+                    valid_members[str(member.id)] = member
 
+        valid_ids = set(valid_members.keys())
+
+        # --- 1. УДАЛЕНИЕ ТЕХ, КТО ПОТЕРЯЛ РОЛЬ ---
         row_3 = worksheet.row_values(3)
         to_delete = []
         for col_idx, cell_value in enumerate(row_3, start=1):
@@ -220,19 +231,47 @@ async def sync_sheet_with_roles():
             if memory_changed: await save_memory()
             await log_ds(f"🧹 Удалено людей без роли: {len(requests)}")
 
+        # --- 2. ПРОВЕРКА НИКНЕЙМОВ И ДОБАВЛЕНИЕ НОВИЧКОВ ---
         row_3_updated = worksheet.row_values(3)
-        existing_ids = {cell.replace("ID-", "").strip() for cell in row_3_updated if cell.startswith("ID-")}
+        existing_ids = set()
+        cells_to_update = []
         
-        for guild in bot.guilds:
-            for member in guild.members:
-                uid_str = str(member.id)
-                if uid_str in valid_ids and uid_str not in existing_ids:
-                    await add_user_to_sheet(member)
-                    await asyncio.sleep(1)
+        for col_idx, cell_value in enumerate(row_3_updated, start=1):
+            clean_cell = cell_value.strip()
+            if clean_cell.startswith("ID-"):
+                uid_str = clean_cell.replace("ID-", "")
+                existing_ids.add(uid_str)
+                
+                # Проверяем никнейм текущего пользователя
+                if uid_str in valid_members:
+                    member = valid_members[uid_str]
+                    
+                    if member.display_name != member.name:
+                        expected_header = f"{member.display_name} ({member.name}) answ"
+                    else:
+                        expected_header = f"{member.name} answ"
+                        
+                    current_header = ""
+                    if col_idx < len(row_3_updated): 
+                        current_header = row_3_updated[col_idx]
+                        
+                    if current_header != expected_header:
+                        cells_to_update.append(gspread.Cell(row=3, col=col_idx + 1, value=expected_header))
+
+        if cells_to_update:
+            worksheet.update_cells(cells_to_update, value_input_option='USER_ENTERED')
+            await log_ds(f"🔄 Обновлено никнеймов в таблице: {len(cells_to_update)}")
+
+        # Добавляем новых пользователей
+        for uid_str, member in valid_members.items():
+            if uid_str not in existing_ids:
+                await add_user_to_sheet(member)
+                await asyncio.sleep(1)
 
         await log_ds("✅ Синхронизация завершена!")
     except Exception as e:
         await log_ds(f"❌ Ошибка при синхронизации: {e}")
+
 
 # Синхронизация новых вопросов
 async def sync_new_questions():
@@ -309,9 +348,9 @@ async def sync_new_questions():
         return False
 
 # ==========================================
-# 5. ЦИКЛИЧЕСКАЯ РАССЫЛКА ВОПРОСОВ
+# 5. ЦИКЛИЧЕСКАЯ РАССЫЛКА ВОПРОСОВ (ПО ВРЕМЕНИ)
 # ==========================================
-@tasks.loop(hours=MAILING_INTERVAL_HOURS)
+@tasks.loop(time=SEND_TIME)
 async def individual_random_mailing():
     global waiting_answers
     await log_ds("\n--- 🚀 НАЧАЛО ЦИКЛА РАССЫЛКИ ---")
@@ -413,7 +452,7 @@ async def individual_random_mailing():
                     await log_ds(f"❌ Не удалось отправить {user_id}: {e}")
                     
         await log_ds(f"--- 🏁 Рассылка завершена. Проверено пользователей: {users_processed} ---")
-        await log_ds("💤 Ухожу в сон на 24 часа...\n")
+        await log_ds("💤 Ухожу в ожидание до следующего запуска по расписанию...\n")
         
     except Exception as e:
         await log_ds(f"❌ Ошибка в рассылке: {e}")
@@ -480,9 +519,66 @@ async def го(ctx):
 
 @bot.command()
 async def обновить_таблицу(ctx):
-    await ctx.send("Проверяю новые вопросы, обновляю нумерацию и дорисовываю рамки... ⏳")
-    result = await sync_new_questions()
-    if result: await ctx.send("✅ Готово! Таблица адаптирована под новые вопросы.")
-    else: await ctx.send("❌ Произошла ошибка или обновлять нечего.")
+    await ctx.send("Проверяю обновления (роли, никнеймы, рамки)... ⏳")
+    await sync_sheet_with_roles() # Теперь принудительно обновит никнеймы и роли
+    result = await sync_new_questions() # Затем нарисует вопросы
+    if result: 
+        await ctx.send("✅ Готово! Таблица полностью синхронизирована.")
+    else: 
+        await ctx.send("❌ Произошла ошибка или новые вопросы не найдены.")
+
+@bot.command(name="вопрос")
+@commands.has_any_role(MODERATOR_ROLE_ID)
+async def send_manual_question(ctx, member: discord.Member):
+    """Отправить случайный вопрос конкретному пользователю: !вопрос @User"""
+    await ctx.send(f"⏳ Ищу свободный вопрос для {member.display_name}...")
+    
+    try:
+        row_3 = worksheet.row_values(3)
+        user_id_str = f"ID-{member.id}"
+        
+        if user_id_str not in row_3:
+            return await ctx.send("❌ Этого пользователя нет в таблице (возможно, у него нет нужной роли).")
+        
+        col_idx = row_3.index(user_id_str) + 1 
+        
+        if member.id in waiting_answers:
+            return await ctx.send(f"⚠️ У {member.display_name} уже висит неотвеченный вопрос. Сначала пусть ответит на него!")
+
+        all_questions = worksheet.col_values(3)[3:]
+        user_column_data = worksheet.col_values(col_idx)[3:]
+        
+        available_indices = []
+        for i in range(len(all_questions)):
+            if not all_questions[i].strip(): continue
+            status = user_column_data[i].upper() if i < len(user_column_data) else 'FALSE'
+            if status == 'FALSE':
+                available_indices.append(i)
+
+        if not available_indices:
+            return await ctx.send(f"✨ {member.display_name} уже ответил на все вопросы в таблице!")
+
+        chosen_idx = random.choice(available_indices)
+        chosen_q = all_questions[chosen_idx]
+        q_number = chosen_idx + 1
+        
+        waiting_answers[member.id] = [chosen_idx + 4, col_idx + 1, 0]
+        await save_memory()
+        
+        embed = discord.Embed(
+            title=f"🎯 Персональный вопрос №{q_number}",
+            description=f"**{chosen_q}**",
+            color=discord.Color.purple()
+        )
+        embed.set_footer(text="Модератор вызвал этот вопрос вручную.")
+        
+        await member.send(embed=embed)
+        await ctx.send(f"✅ Вопрос №{q_number} успешно отправлен в ЛС пользователю {member.display_name}.")
+        await log_ds(f"👨‍⚖️ Модератор {ctx.author.name} вручную пнул {member.name}")
+
+    except discord.Forbidden:
+        await ctx.send(f"🚫 Не удалось отправить сообщение: у {member.display_name} закрыты ЛС.")
+    except Exception as e:
+        await ctx.send(f"❌ Произошла ошибка: {e}")
 
 bot.run(TOKEN)
