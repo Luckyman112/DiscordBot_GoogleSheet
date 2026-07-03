@@ -1,0 +1,7 @@
+.env
+credentials.json
+waiting_answers.json
+__pycache__/
+*.pyc
+.venv/
+venv/
