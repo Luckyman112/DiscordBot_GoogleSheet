@@ -10,6 +10,7 @@ load_dotenv()
 # НАСТРОЙКИ
 # ==========================================
 SHEET_ID = os.getenv("SHEET_ID")
+WORKSHEET_NAME = "АвтоВопросы"  # Название листа (вкладки) внутри таблицы
 TOKEN = os.getenv("DISCORD_TOKEN")
 TARGET_ROLE_ID = os.getenv("TARGET_ROLE_ID")       # ID роли для автодобавления
 MODERATOR_ROLE_ID = os.getenv("MODERATOR_ROLE_ID") # Роль модератора вопросов
@@ -29,6 +30,11 @@ if _missing:
 TARGET_ROLE_ID = int(TARGET_ROLE_ID)
 MODERATOR_ROLE_ID = int(MODERATOR_ROLE_ID)
 ADMIN_CHANNEL_ID = int(ADMIN_CHANNEL_ID)
+
+# Автозапуск ежедневной рассылки при старте бота. Поставь "false" в .env,
+# чтобы при локальном тестировании бот поднимался без авторассылки
+# (запустить вручную можно командой !go).
+AUTO_START_MAILING = os.getenv("AUTO_START_MAILING", "true").lower() == "true"
 
 MEMORY_FILE = 'waiting_answers.json'  # Файл для сохранения памяти бота
 

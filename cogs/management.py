@@ -1,7 +1,7 @@
 from discord.ext import commands
 
 import database
-from config import MODERATOR_ROLE_ID, log_ds
+from config import AUTO_START_MAILING, MODERATOR_ROLE_ID, log_ds
 
 
 class Management(commands.Cog):
@@ -17,8 +17,10 @@ class Management(commands.Cog):
         await database.sync_sheet_with_roles()
 
         reports_cog = self.bot.get_cog("Reports")
-        if reports_cog and not reports_cog.individual_random_mailing.is_running():
+        if AUTO_START_MAILING and reports_cog and not reports_cog.individual_random_mailing.is_running():
             reports_cog.individual_random_mailing.start()
+        elif not AUTO_START_MAILING:
+            await log_ds("⏸ Автозапуск рассылки отключён (AUTO_START_MAILING=false). Запустить вручную: !go")
 
     @commands.command(name="go")
     @commands.has_any_role(MODERATOR_ROLE_ID)

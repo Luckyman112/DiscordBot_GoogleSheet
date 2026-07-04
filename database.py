@@ -5,14 +5,14 @@ import os
 import discord
 import gspread
 
-from config import SHEET_ID, MEMORY_FILE, BORDER_STYLE, TARGET_ROLE_ID, bot, log_ds
+from config import SHEET_ID, WORKSHEET_NAME, MEMORY_FILE, BORDER_STYLE, TARGET_ROLE_ID, bot, log_ds
 
 # ==========================================
 # ИНИЦИАЛИЗАЦИЯ GOOGLE TABLES
 # ==========================================
 client = gspread.service_account(filename="credentials.json")
 sh = client.open_by_key(SHEET_ID)
-worksheet = sh.get_worksheet(0)
+worksheet = sh.worksheet(WORKSHEET_NAME)
 
 # Словарь для хранения ожидаемых ответов: {user_id: [row, col, days_ignored]}
 waiting_answers = {}
@@ -76,6 +76,7 @@ async def remove_user_from_sheet(user_id):
                 }]
             }
             await run_blocking(sh.batch_update, body)
+            worksheet._properties["gridProperties"]["columnCount"] -= 2
 
             if int(user_id) in waiting_answers:
                 del waiting_answers[int(user_id)]
@@ -97,6 +98,10 @@ async def add_user_to_sheet(member):
             return False
 
         current_col_idx = len(row_3) + 1
+        needed_cols = current_col_idx + 1
+        if needed_cols > worksheet.col_count:
+            await run_blocking(worksheet.add_cols, needed_cols - worksheet.col_count)
+
         col_3_values = await run_blocking(worksheet.col_values, 3)
         questions_count = len(col_3_values[3:])
 
@@ -254,6 +259,7 @@ async def sync_sheet_with_roles():
                     memory_changed = True
 
             await run_blocking(sh.batch_update, {"requests": requests})
+            worksheet._properties["gridProperties"]["columnCount"] -= 2 * len(requests)
             if memory_changed:
                 await save_memory()
             await log_ds(f"🧹 Удалено людей без роли: {len(requests)}")
