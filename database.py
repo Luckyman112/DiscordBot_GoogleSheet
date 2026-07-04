@@ -27,19 +27,26 @@ async def run_blocking(func, *args, **kwargs):
 # --- ФУНКЦИИ ПАМЯТИ ---
 async def load_memory():
     global waiting_answers
-    if os.path.exists(MEMORY_FILE):
-        try:
-            with open(MEMORY_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                waiting_answers = {}
-                for k, v in data.items():
-                    if len(v) == 2:
-                        v.append(0)
-                    waiting_answers[int(k)] = v
-            await log_ds(f"🧠 Память загружена. Должников в базе: {len(waiting_answers)}")
-        except Exception as e:
-            await log_ds(f"❌ Ошибка загрузки памяти: {e}")
+    if not os.path.exists(MEMORY_FILE):
+        # Файл ещё не создан (первый запуск / свежий volume-mount в Docker) —
+        # создаём пустой, иначе Docker может смонтировать на его место директорию.
+        with open(MEMORY_FILE, 'w', encoding='utf-8') as f:
+            json.dump({}, f)
+        await log_ds(f"🧠 Файл памяти {MEMORY_FILE} не найден, создан пустой.")
+        return
+
+    try:
+        with open(MEMORY_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
             waiting_answers = {}
+            for k, v in data.items():
+                if len(v) == 2:
+                    v.append(0)
+                waiting_answers[int(k)] = v
+        await log_ds(f"🧠 Память загружена. Должников в базе: {len(waiting_answers)}")
+    except Exception as e:
+        await log_ds(f"❌ Ошибка загрузки памяти: {e}")
+        waiting_answers = {}
 
 
 async def save_memory():

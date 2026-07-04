@@ -1,0 +1,15 @@
+services:
+  questions-bot:
+    build: .
+    container_name: cg-questions-bot
+    env_file:
+      - .env
+    volumes:
+      - ./credentials.json:/app/credentials.json:ro
+      - ./waiting_answers.json:/app/waiting_answers.json
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
